@@ -133,6 +133,17 @@
       color: rgba(255,255,255,.92);
     }
 
+    .iconBtn{
+      padding:6px 8px;
+      border-radius:10px;
+      font-size:13px;
+      line-height:1;
+      min-width:32px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+    }
+
     .hint{
       font-size: 12px;
       color: var(--muted);
@@ -440,7 +451,10 @@
               <div class="sub" id="withSub">Chat tersimpan dan realtime</div>
             </div>
           </div>
-          <div class="pill"><span class="dot" style="background:var(--accent); box-shadow: 0 0 0 3px rgba(124,92,255,.15)"></span><span>DM</span></div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="pill"><span class="dot" style="background:var(--accent); box-shadow: 0 0 0 3px rgba(124,92,255,.15)"></span><span>DM</span></div>
+            <button id="btnClearHistory" class="btn ghost iconBtn" title="Hapus history">🧹</button>
+          </div>
         </div>
 
         <div class="chat" id="chat"></div>
@@ -564,12 +578,26 @@
         left.appendChild(av);
         left.appendChild(txt);
 
-        const right = document.createElement("div");
-        right.className = "userMeta";
-        right.textContent = "›";
+        const actions = document.createElement("div");
+        actions.style.display = "flex";
+        actions.style.alignItems = "center";
+        actions.style.gap = "6px";
+
+        const chev = document.createElement("div");
+        chev.className = "userMeta";
+        chev.textContent = "›";
+
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn ghost iconBtn";
+        delBtn.title = "Hapus kontak";
+        delBtn.textContent = "🗑";
+        delBtn.onclick = (ev) => { ev.stopPropagation(); deleteContact(u.id); };
+
+        actions.appendChild(delBtn);
+        actions.appendChild(chev);
 
         item.appendChild(left);
-        item.appendChild(right);
+        item.appendChild(actions);
 
         item.onclick = () => selectUser(u);
         box.appendChild(item);
@@ -705,6 +733,49 @@
         await afterAuth();
       } catch (e) { $("authMsg").textContent = e.message; }
     };
+
+    // delete chat history with a user
+    async function deleteChatHistory(userId){
+      if (!userId) return toast('Pilih user dulu');
+      const ok = confirm('Hapus seluruh history chat dengan user ini? Tindakan ini tidak bisa dibatalkan.');
+      if (!ok) return;
+      try{
+        await api('/api/messages/' + userId, { method: 'DELETE' });
+        toast('History chat dihapus');
+        if (selectedUser && selectedUser.id === userId) clearChat();
+        await loadUsers();
+      }catch(e){
+        toast('Gagal menghapus: ' + e.message);
+      }
+    }
+
+    // delete contact (remove user) - backend should handle auth and permissions
+    async function deleteContact(userId){
+      if (!userId) return;
+      const ok = confirm('Hapus kontak ini? Pesan dan informasi terkait mungkin juga dihapus');
+      if (!ok) return;
+      try{
+        await api('/api/users/' + userId, { method: 'DELETE' });
+        toast('Kontak dihapus');
+        // if currently selected, clear selection
+        if (selectedUser && selectedUser.id === userId){
+          selectedUser = null;
+          clearChat();
+          $("withTitle").textContent = 'Pilih user untuk mulai chat';
+          $("withAvatar").textContent = '💬';
+          $("withSub").textContent = 'Chat tersimpan dan realtime';
+        }
+        await loadUsers();
+      }catch(e){
+        toast('Gagal menghapus kontak: ' + e.message);
+      }
+    }
+
+    // attach clear history button
+    $("btnClearHistory").addEventListener('click', ()=>{
+      if (!selectedUser) return toast('Pilih user dulu');
+      deleteChatHistory(selectedUser.id);
+    });
 
     // auto-login kalau token ada
     (async () => {
