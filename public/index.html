@@ -1,0 +1,209 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DM Chat</title>
+  <style>
+    body { font-family: Arial; max-width: 980px; margin: 20px auto; padding: 0 12px; }
+    .grid { display:grid; grid-template-columns: 260px 1fr; gap: 12px; }
+    .card { border:1px solid #ddd; border-radius: 12px; padding: 12px; }
+    #users { max-height: 520px; overflow:auto; }
+    .u { padding:8px; border-radius:10px; cursor:pointer; }
+    .u:hover { background:#f4f4f4; }
+    .u.active { background:#eaeaea; }
+    #chat { height: 520px; overflow:auto; border:1px solid #eee; border-radius: 12px; padding: 12px; }
+    .row { margin: 8px 0; }
+    .meta { color:#777; font-size: 12px; }
+    form { display:flex; gap: 8px; margin-top: 10px; }
+    input { flex:1; padding: 10px; }
+    button { padding: 10px 14px; }
+    .muted { color:#777; }
+  </style>
+</head>
+<body>
+  <h2>DM Chat (Login + Realtime)</h2>
+
+  <div class="card" id="authCard">
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <input id="au" placeholder="username" maxlength="20">
+      <input id="ap" placeholder="password (min 6)" type="password">
+      <button id="btnLogin">Login</button>
+      <button id="btnReg">Register</button>
+      <span id="authMsg" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="grid" id="app" style="display:none;">
+    <div class="card">
+      <div><b>Users</b></div>
+      <div class="meta" id="me"></div>
+      <hr>
+      <div id="users"></div>
+    </div>
+
+    <div class="card">
+      <div><b>Chat</b> <span class="meta" id="with"></span></div>
+      <div id="chat"></div>
+      <form id="composer">
+        <input id="text" placeholder="Tulis pesan..." maxlength="500" autocomplete="off" />
+        <button>Kirim</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    let token = localStorage.getItem("token") || "";
+    let me = null;
+    let selectedUser = null;
+    let socket = null;
+
+    const $ = (id) => document.getElementById(id);
+    const authMsg = $("authMsg");
+
+    function fmtTime(ts) {
+      return new Date(ts).toLocaleTimeString();
+    }
+
+    function addMsg(m) {
+      const div = document.createElement("div");
+      div.className = "row";
+      const who = m.sender_id === me.id ? "Kamu" : (selectedUser?.username || "Dia");
+
+      // aman dari XSS: pakai textContent
+      const line = document.createElement("div");
+      line.textContent = `${who}: ${m.text}`;
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = fmtTime(m.created_at);
+
+      div.appendChild(line);
+      div.appendChild(meta);
+      $("chat").appendChild(div);
+      $("chat").scrollTop = $("chat").scrollHeight;
+    }
+
+    async function api(path, opts={}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: {
+          "Content-Type": "application/json",
+          ...(opts.headers || {}),
+          ...(token ? { Authorization: "Bearer " + token } : {})
+        }
+      });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) throw new Error(data.error || "Request error");
+      return data;
+    }
+
+    async function loadUsers() {
+      const { users } = await api("/api/users");
+      const box = $("users");
+      box.innerHTML = "";
+      users.forEach(u => {
+        const div = document.createElement("div");
+        div.className = "u";
+        div.textContent = u.username;
+        div.onclick = () => selectUser(u);
+        div.dataset.id = u.id;
+        box.appendChild(div);
+      });
+    }
+
+    function markActiveUser(id) {
+      [...$("users").children].forEach(el => {
+        el.classList.toggle("active", Number(el.dataset.id) === id);
+      });
+    }
+
+    async function selectUser(u) {
+      selectedUser = u;
+      $("with").textContent = `dengan ${u.username}`;
+      $("chat").innerHTML = "";
+      markActiveUser(u.id);
+
+      const { messages } = await api("/api/messages/" + u.id);
+      messages.forEach(addMsg);
+    }
+
+    function connectSocket() {
+      socket = io({ auth: { token } });
+
+      socket.on("connect_error", (e) => {
+        authMsg.textContent = "Socket error: " + e.message;
+      });
+
+      socket.on("dm", (m) => {
+        // tampilkan hanya kalau chat sedang dengan user tsb
+        if (!selectedUser) return;
+
+        const a = m.sender_id === selectedUser.id && m.receiver_id === me.id;
+        const b = m.sender_id === me.id && m.receiver_id === selectedUser.id;
+        if (a || b) addMsg(m);
+      });
+    }
+
+    $("composer").addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (!socket || !selectedUser) return;
+      const text = $("text").value.trim();
+      if (!text) return;
+      socket.emit("dm", { toUserId: selectedUser.id, text });
+      $("text").value = "";
+    });
+
+    async function afterAuth() {
+      const meRes = await api("/api/me");
+      me = meRes.user;
+
+      $("authCard").style.display = "none";
+      $("app").style.display = "grid";
+      $("me").textContent = `Login sebagai: ${me.username}`;
+
+      await loadUsers();
+      connectSocket();
+    }
+
+    $("btnLogin").onclick = async () => {
+      authMsg.textContent = "";
+      try {
+        const username = $("au").value.trim();
+        const password = $("ap").value;
+        const res = await api("/api/login", {
+          method: "POST",
+          body: JSON.stringify({ username, password }),
+          headers: {}
+        });
+        token = res.token;
+        localStorage.setItem("token", token);
+        await afterAuth();
+      } catch (e) { authMsg.textContent = e.message; }
+    };
+
+    $("btnReg").onclick = async () => {
+      authMsg.textContent = "";
+      try {
+        const username = $("au").value.trim();
+        const password = $("ap").value;
+        const res = await api("/api/register", {
+          method: "POST",
+          body: JSON.stringify({ username, password }),
+          headers: {}
+        });
+        token = res.token;
+        localStorage.setItem("token", token);
+        await afterAuth();
+      } catch (e) { authMsg.textContent = e.message; }
+    };
+
+    // auto-login kalau token ada
+    (async () => {
+      if (!token) return;
+      try { await afterAuth(); } catch { localStorage.removeItem("token"); token=""; }
+    })();
+  </script>
+</body>
+</html>
